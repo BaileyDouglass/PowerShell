@@ -15,8 +15,13 @@ $comboBox.Items.Add("Processes")
 $comboBox.Items.Add("Tasks")
 $comboBox.Items.Add("Services")
 $comboBox.SelectedIndex = 0
+$comboBox.Add_SelectedIndexChanged({
+    RefreshList
+})
 $form.Controls.Add($comboBox)
 
+# Create a Hashtable to store lists for Processes, Tasks, and Services
+$contextLists = @{}
 
 # Initialize TabControl for right panel
 $tabControl = New-Object System.Windows.Forms.TabControl
@@ -78,26 +83,28 @@ $detailLabel.Size = New-Object System.Drawing.Size(860, 40)
 $detailPanel.Controls.Add($detailLabel)
 
 function RefreshList {
-    $procList.Items.Clear()
     $context = $comboBox.SelectedItem
-    if ($context -eq "Processes") {
-        $items = Get-Process
-        $items | ForEach-Object {
-            $procList.Items.Add($_.Id.ToString() + " " + $_.ProcessName)
+    $procList.Items.Clear()
+    if ($contextLists.ContainsKey($context)) {
+        $procList.Items.AddRange($contextLists[$context])
+    } else {
+        if ($context -eq "Processes") {
+            $items = Get-Process | ForEach-Object { "$($_.Id) $($_.ProcessName)" }
+        } elseif ($context -eq "Tasks") {
+            $items = Get-ScheduledTask | ForEach-Object { "$($_.TaskPath) $($_.TaskName)" }
+        } elseif ($context -eq "Services") {
+            $items = Get-Service | ForEach-Object { "$($_.Status) $($_.DisplayName)" }
         }
-    } elseif ($context -eq "Tasks") {
-        $items = Get-ScheduledTask
-        $items | ForEach-Object {
-            $procList.Items.Add($_.TaskPath + " " + $_.TaskName)
-        }
-    } elseif ($context -eq "Services") {
-        $items = Get-Service
-        $items | ForEach-Object {
-            $procList.Items.Add($_.Status + " " + $_.DisplayName)
-        }
+        $procList.Items.AddRange($items)
+        $contextLists[$context] = $items
     }
-    $procList.Refresh()
 }
+
+# Initialize Timer for auto-refresh
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 5000 # 5 seconds
+$timer.Add_Tick({ RefreshList })
+$timer.Start()
 
 
 # Initialize Button to Mark as Safe
@@ -150,22 +157,31 @@ $refreshBtn.Location = New-Object System.Drawing.Point(480, 320)
 $refreshBtn.Size = New-Object System.Drawing.Size(100, 30)
 $refreshBtn.Text = 'Refresh'
 $refreshBtn.Add_Click({
-    RefreshProcessList
+    RefreshList
 })
 $form.Controls.Add($refreshBtn)
 
 # Show Details of Selected Process
 $procList.Add_SelectedIndexChanged({
     $selected = $procList.SelectedItem
+    $context = $comboBox.SelectedItem
     if ($selected -ne $null) {
         $id = $selected.Split(' ')[0]
-        $details = Get-Process -Id $id
-        $detailLabel.Text = "Details: CPU - $($details.CPU) Memory - $($details.WorkingSet) Start Time - $($details.StartTime)"
+        if ($context -eq "Processes") {
+            $details = Get-Process -Id $id
+            $detailLabel.Text = "Details: CPU - $($details.CPU) Memory - $($details.WorkingSet) Start Time - $($details.StartTime)"
+        } elseif ($context -eq "Tasks") {
+            # Logic to display details of tasks
+            $detailLabel.Text = "Task Details: Currently not implemented"
+        } elseif ($context -eq "Services") {
+            # Logic to display details of services
+            $details = Get-Service | Where-Object {$_.DisplayName -eq $id}
+            $detailLabel.Text = "Details: Status - $($details.Status) DisplayName - $($details.DisplayName)"
+        }
     }
 })
-
 # Populate ListBox with currently running processes
-RefreshProcessList
+RefreshList
 
 # Display the form
 $form.ShowDialog()
