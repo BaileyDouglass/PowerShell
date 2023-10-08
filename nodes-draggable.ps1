@@ -28,8 +28,13 @@ class Node {
     [void]Draw([System.Drawing.Graphics]$graphics) {
         $brush = [System.Drawing.SolidBrush]::new($this.Color)
         $graphics.FillEllipse($brush, $this.X, $this.Y, 20, 20)
-        $font = New-Object System.Drawing.Font("Arial", 10)
-        $graphics.DrawString($this.Label, $font, [System.Drawing.Brushes]::Black, ($this.X + 25), ($this.Y + 5))
+    }
+
+    [void]DrawMetadata([System.Drawing.Graphics]$graphics) {
+        $font = New-Object System.Drawing.Font("Segoe UI Emoji", 12)
+        $emoji = [char]::ConvertFromUtf32(0x1F643)  # 😀
+        $graphics.DrawString($($this.Label + ' ' + $emoji), $font, [System.Drawing.Brushes]::Black, ($this.X + 25), ($this.Y + 5))
+        # Add additional metadata here as needed.
     }
 }
 
@@ -57,9 +62,17 @@ $script:selectedNode = $null
 # Function to draw all nodes
 function DrawNodes {
     $graphics.Clear([System.Drawing.Color]::White)
+
+    #Draw the nodes first
     foreach ($node in $script:nodes) {
         $node.Draw($graphics)
     }
+
+    # Overlay metadata
+    foreach ($node in $script:nodes) {
+        $node.DrawMetadata($graphics)
+    }
+
     $pictureBox.Image = $bitmap
     $pictureBox.Refresh()
 }
@@ -91,11 +104,7 @@ $pictureBox.Add_MouseDown({
     }
 })
 
-# Update node position while dragging
-$cursor = @{
-    x = -1
-    y = -1
-}
+
 # Update node position while dragging
 $pictureBox.Add_MouseMove({
     if ($null -ne $script:selectedNode) {
