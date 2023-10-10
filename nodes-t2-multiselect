@@ -1,0 +1,402 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Function to display simple popup
+function showPopup {
+    [System.Windows.Forms.MessageBox]::Show("Work In Progress..")
+}
+
+# Initialize Main Form
+$Form = New-Object System.Windows.Forms.Form
+$Form.Text = "Nodes V2 - Hold CTRL while anywhere to move selected nodes.."
+$Form.Size = New-Object System.Drawing.Size(800,600)
+
+# Initialize PictureBox
+$PictureBox = New-Object System.Windows.Forms.PictureBox
+$PictureBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+$PictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::AutoSize
+
+# Initialize Bitmap and Graphics objects
+$Bitmap = New-Object System.Drawing.Bitmap $Form.Width, $Form.Height
+$Graphics = [System.Drawing.Graphics]::FromImage($Bitmap)
+
+# Initialize variables
+$script:random = New-Object System.Random
+$script:nodeCount = 50
+
+$script:nodes = @()
+$script:statuses = @('Active', 'Inactive', 'Pending', 'Error', 'Undefined')
+
+# Initialize selectedNodes as an ArrayList for more efficient operations
+$script:selectedNodes = New-Object 'System.Collections.ArrayList'
+
+$script:cursorStartPos = @{}
+$script:mouseIsDown = $false
+$script:selecting = $false
+$script:selectionRect = New-Object 'System.Drawing.Rectangle'
+
+$script:lastEventTime = [DateTime]::MinValue
+$script:eventInterval = [TimeSpan]::FromMilliseconds(10) # ms rate limit
+
+# $script:historyStack = New-Object 'System.Collections.Stack'
+
+class Node {
+    [int]$X
+    [int]$Y
+    [int]$Radius
+    [System.Drawing.Color]$Color
+    [string]$Class
+    [string]$Status
+    [string]$Label
+    [bool]$Selected
+    # [bool]$Frozen
+    [hashtable]$Ghost
+    [System.Drawing.Rectangle]$BoundingBox
+    
+    Node ([int]$x, [int]$y, [string]$class, [string]$label) {
+        $this.X = $x
+        $this.Y = $y
+        $this.Radius = 10
+        $this.Class = $class
+        $this.Status = $script:statuses | Get-Random
+        $this.Label = $label
+        $this.CalculateColor()
+        $this.Selected = $false
+        # $this.Frozen = $false
+        $this.Ghost = @{
+            X=$x
+            Y=$y
+            OldX=$x
+            OldY=$y
+        }
+        $this.UpdateBoundingBox()
+    }
+
+    [void] UpdateBoundingBox() {
+        $newX = $this.X - $this.Radius
+        $newY = $this.Y - $this.Radius
+        $newWidth = 2 * $this.Radius
+        $newHeight = 2 * $this.Radius
+        $this.BoundingBox = New-Object System.Drawing.Rectangle($newX, $newY, $newWidth, $newHeight)
+    }
+
+    [void] UpdatePosition([int]$newX, [int]$newY) {
+        $this.X = $newX
+        $this.Y = $newY
+        $this.UpdateBoundingBox()
+    }
+
+    [double] CalculateDistance([int]$newX, [int]$newY) {
+        $distance = [math]::sqrt( [math]::pow(($this.X - $newX), 2) + [math]::pow(($this.Y - $newY), 2) )
+        # Write-Host "Calculated distance from " $this.Label ": " $distance
+        return $distance
+    }
+    
+    [void] CalculateColor() {
+        switch ($this.status) {
+            # Windows Color Theme..
+            'Active' { $this.Color = [System.Drawing.Color]::FromArgb(255, 0, 160, 80) }    # GREEN
+            'Inactive' { $this.Color = [System.Drawing.Color]::FromArgb(255, 0, 114, 188) }  # BLUE
+            'Pending' { $this.Color = [System.Drawing.Color]::FromArgb(255, 255, 205, 0) }   # YELLOW
+            'Error' { $this.Color = [System.Drawing.Color]::FromArgb(255, 237, 27, 36) }    # RED
+            default { $this.Color = [System.Drawing.Color]::Gray }
+        }
+    }
+    
+    [void] Draw([System.Drawing.Graphics]$Graphics) {
+        $brush = [System.Drawing.SolidBrush]::new($this.Color)
+        $Graphics.FillEllipse($brush, $this.X - $this.Radius, $this.Y - $this.Radius, 2 * $this.Radius, 2 * $this.Radius)
+    }
+    
+    [void] DrawMetadata([System.Drawing.Graphics]$Graphics) {
+        $font = New-Object System.Drawing.Font("Segoe UI Emoji", 12)
+        $Graphics.DrawString($($this.Label), $font, [System.Drawing.Brushes]::Black, ($this.X), ($this.Y))
+        # Add additional metadata here as needed.
+    }
+    
+    [void] DrawCursor([System.Drawing.Graphics]$Graphics) {
+        $cursor_color = InvertColor $this.Color
+        $pen = [System.Drawing.Pen]::new($cursor_color, 4)
+        $cursorGap = 4
+        $Graphics.DrawEllipse(
+        $pen, 
+        $this.X - $this.Radius - $cursorGap, 
+        $this.Y - $this.Radius - $cursorGap, 
+        2 * ($this.Radius + $cursorGap), 
+        2 * ($this.Radius + $cursorGap)
+        )
+    }
+    
+    [void] DrawGhost([System.Drawing.Graphics]$Graphics) {
+        $Ghost_color = AverageColors ([System.Drawing.Color]::FromArgb(0,0,0,0)) $this.Color
+        $Ghost_brush = [System.Drawing.SolidBrush]::new($Ghost_color)
+        $Graphics.FillEllipse(
+        $Ghost_brush, 
+        $this.Ghost.x - $this.Radius, 
+        $this.Ghost.y - $this.Radius, 
+        2 * $this.Radius + 2, 
+        2 * $this.Radius + 2
+        )
+    }
+}
+
+function AverageColors([System.Drawing.Color]$color1, [System.Drawing.Color]$color2) {
+    $averageR = [math]::Round(($color1.R + $color2.R) / 2)
+    $averageG = [math]::Round(($color1.G + $color2.G) / 2)
+    $averageB = [math]::Round(($color1.B + $color2.B) / 2)
+    $averageA = [math]::Round(($color1.A + $color2.A) / 2)  # Optional, for alpha
+    
+    return [System.Drawing.Color]::FromArgb($averageA, $averageR, $averageG, $averageB)
+}
+
+function InvertColor([System.Drawing.Color]$color) {
+    $invertedR = 255 - $color.R
+    $invertedG = 255 - $color.G
+    $invertedB = 255 - $color.B
+    $alpha = $color.A  # Maintain the alpha channel
+    
+    return [System.Drawing.Color]::FromArgb($alpha, $invertedR, $invertedG, $invertedB)
+}
+
+
+# Function to draw all nodes
+function DrawNodes () {
+    $Graphics.Clear([System.Drawing.Color]::White)
+    
+    if ($script:selecting) {
+        $c = [System.Drawing.Color]::LightBlue
+        $b = [System.Drawing.SolidBrush]::new($c)
+        $Graphics.FillRectangle($b, $script:selectionRect)
+    }
+    
+    # Draw the Ghosts
+    if ($script:mouseIsDown -and -not $script:selecting) {
+        foreach ($node in $script:selectedNodes) {
+            $node.DrawGhost($Graphics)
+        }
+    }
+    
+    
+    # Draw the cursor
+    foreach ($node in $script:selectedNodes) {
+        $node.DrawCursor($Graphics)
+    }
+    
+    #Draw the nodes
+    foreach ($node in $script:nodes) {
+        $node.Draw($Graphics)
+    }
+    
+    # Overlay metadata
+    foreach ($node in $script:nodes) {
+        $node.DrawMetadata($Graphics)
+    }
+    
+    $PictureBox.Image = $Bitmap
+    $PictureBox.Refresh()
+}
+
+function ClearSelection {
+    foreach($n in $script:selectedNodes) {
+        $n.selected = $false
+    }
+    $script:selectedNodes.Clear()
+}
+
+# START SIMULATION
+
+# Create nodes with random positions, statuses, and labels
+for ($i = 0; $i -lt $script:nodeCount; $i++) {
+    $x = $script:random.Next(0, $Form.Width)
+    $y = $script:random.Next(0, $Form.Height)
+    $status = $script:statuses | Get-Random
+    $label = "Node" + ($i + 1)
+    $node = [Node]::new($x, $y, $status, $label)
+    $script:nodes += $node
+}
+
+DrawNodes
+$Form.Controls.Add($PictureBox)
+
+# Select single node on mouse down, multiple nodes while CTRL, and prepare for drag
+$PictureBox.Add_MouseDown({
+    $script:mouseIsDown = $true
+    # $script:lastEventTime = [DateTime]::UtcNow
+    $script:cursorStartPos.X = $_.X
+    $script:cursorStartPos.Y = $_.Y
+    
+    # Reset selection state
+    $script:selecting = $false
+    
+    # Check if CTRL is pressed
+    $ctrlPressed = ([System.Windows.Forms.Control]::ModifierKeys -eq [System.Windows.Forms.Keys]::Control)
+    
+    if ($ctrlPressed) {
+        Write-Host "CTRL is pressed."
+        # Grow selected nodes list
+        foreach ($node in $script:nodes) {
+            if ($node.CalculateDistance($_.X, $_.Y) -lt $node.Radius) {
+                if ($script:selectedNodes -contains $node) {
+                    # Remove node to selection
+                    $node.selected = $false
+                    $script:selectedNodes.Remove($node)
+                    Write-Host "Node($($script:selectedNodes.Count)) removed($($node.label))"
+                } else {
+                    # Add node to selection
+                    $node.selected = $true
+                    $script:selectedNodes.Add($node) | Out-Null
+                    Write-Host "Node($($script:selectedNodes.Count)) added($($node.label))"
+                } 
+            }
+        }
+        DrawNodes
+    } else { # No Modifer Key
+        $HitNode = $false
+        
+        # Check for hit using data from each node..
+        foreach ($node in $script:nodes) {
+            # Check Position (mouseDown)
+            if ($node.CalculateDistance($_.X, $_.Y) -lt $node.Radius) {
+                # Mouse was within this node
+                
+                $HitNode = $true
+                Write-Host "Select($($node.Label))"
+                
+                # Check if node has been selected already..
+                if ($script:selectedNodes -notcontains $node) {
+                    # This Node wasn't part of the previous selection
+                    # Reset selection with current Node
+                    ClearSelection
+                    
+                    $script:selectedNodes.Add($node)
+                    $node.Selected = $true
+                } else {
+                    # Part of existing selection
+                    # Dont do anything... yet
+                    Write-Host "SELECTED PRE-SELECTED NODE"
+                }
+            } # Else mouseclick wasn't within this node
+        }
+        if ($false -eq $HitNode)  {
+            # Mouseclick was in not within any nodes
+            ClearSelection
+            $script:selecting = $true
+        }
+        DrawNodes
+    }
+})
+
+# Update node position while dragging
+# NOTE: This event fires like crazy!!
+$PictureBox.Add_MouseMove({
+    # Dont bother doing anything unless mouse is pressed..
+    if ($script:mouseIsDown) {
+        # Write-Host "Dragging Mouse..."
+        $currentTime = [DateTime]::UtcNow
+        if (($currentTime - $script:lastEventTime) -ge $script:eventInterval) {
+            # Update time before last shuffle..
+            $script:lastEventTime = $currentTime
+            
+            # Check if in selecting mode
+            if ($script:selecting) {
+                # Calculate the selection rectangle based on cursor starting and current position
+                $script:selectionRect = New-Object System.Drawing.Rectangle(
+                [Math]::Min($script:cursorStartPos.X, $_.X), 
+                [Math]::Min($script:cursorStartPos.Y, $_.Y), 
+                [Math]::Abs($script:cursorStartPos.X - $_.X), 
+                [Math]::Abs($script:cursorStartPos.Y - $_.Y)
+                )
+                # Write-Host $script:selectionRect
+                
+                # A little more efficient(?) to just reset selection..
+                ClearSelection
+                
+                # Find nodes that are within the selected rectangle and add them to selection
+                foreach ($node in $script:nodes) {
+                    if ($script:selectionRect.IntersectsWith($($node.BoundingBox))) {
+                        Write-Host "Node added to selection: $($node.label)"
+                        $node.selected = $true
+                        $script:selectedNodes.Add($node) 
+                    }
+                }
+                
+                Write-Host "Selected $($script:selectedNodes.Count) Nodes."
+            } else {
+                # Not Selecting; Drag Ghost with mouse movements..
+                foreach ($node in $script:selectedNodes) {
+                    # Update the Ghost node relative to the cursors movements
+                    $node.Ghost.x = $node.X - ($script:cursorStartPos.X - $_.X)
+                    $node.Ghost.y = $node.Y - ($script:cursorStartPos.Y - $_.Y)
+                    
+                }
+            }
+            DrawNodes
+        }
+    }
+})
+
+# Deselect node on mouse up
+$PictureBox.Add_MouseUp({
+    # Update mouseIsDown
+    $script:mouseIsDown = $false
+    # Write-Host "Mouse button released"
+    
+    # Check if nodes were selected
+    if (0 -lt $script:selectedNodes.Count) {
+        
+        # Check if in box select mode
+        if ($script:selecting) {
+            # Mark selection complete, for now..
+            $script:selecting = $false
+            $script:cursorStartPos = @{}
+            $script:selectionRect = New-Object 'System.Drawing.Rectangle'
+        } else {
+            # 
+            foreach ($node in $script:selectedNodes) {
+                # Swap each nodes position with the cursor position
+                Write-Host "Updating $($script:selectedNodes)"
+                $node.UpdatePosition($node.Ghost.X, $node.Ghost.Y)
+                
+                $node.selected = $false
+            }
+        }
+        
+    }
+    
+    DrawNodes
+})
+
+# KEYBOARD CONTROLS
+$Form.Add_KeyDown({
+    # Write-Host "Key Pressed: " $_.KeyCode
+    if ($_.Control -and $_.KeyCode -eq 'A') {
+        Write-Host "CTRL + A Pressed."
+        $script:SelectedNodes.Clear()
+        foreach ($node in $script:Nodes) {
+            $script:SelectedNodes.Add($node)
+            $node.selected = $true
+        }
+        DrawNodes
+    }
+})
+# Enable KeyPreview to true for the form to intercept key events before they reach any controls
+$Form.KeyPreview = $true
+
+
+# Show Help
+# Check if the global variable is set, or override here manually..
+$popupOverride = $false
+if (($null -eq $global:showPopup) -or $popupOverride) {
+    # Variable not set, show controls menu
+    ShowPopup
+    
+    # Set the global variable so that the controls menu won't be shown again
+    $global:showPopup = $true
+}
+
+# Show Form
+$Form.ShowDialog()
+
+# TODO
+# DETECT IF NODE IS PART OF SELECTION BEFORE DISCARDING IT, ON A DRAG EVENT
+# ADD INTERFACE LAYER
