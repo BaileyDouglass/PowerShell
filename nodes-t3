@@ -1,3 +1,6 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
 class Node {
     # Shaken, not stirred.
     [float]$X
@@ -20,11 +23,12 @@ class Node {
 }
 
 class Window {
-    [System.Windows.Forms.Form]$Form
+    [System.Windows.Forms.Form]$Form;
     [NodeInterface]$NodeInterface
     
     # Table to store all custom brushes, pens; indexed by [string]
     [hashtable]$PaintTools
+    #[hashtable]$ditherPattern
     
     Window ([string]$title, [int]$x, [int]$y) {
         # Initialize Pen Container
@@ -34,10 +38,7 @@ class Window {
         $this.AddPen("Green", 255, 0, 160, 80)
         $this.AddPen("Blue", 255, 0, 114, 188)
         $this.AddPen("Yellow", 255, 255, 205, 0)
-        $this.AddPen("Gray", 255, 127, 127, 127)
-
-        Write-Host "PaintTools Init:" $this.PaintTools
-        
+        $this.AddPen("Gray", 255, 127, 127, 127)        
 
         $this.Form = New-Object System.Windows.Forms.Form
         $this.Form.Text = $title
@@ -86,10 +87,22 @@ class Window {
             # DarkerFill = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(255, 0, 160, 80))
             # DarkestFill = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(255, 0, 160, 80))
         }
-        Write-Host $penObj
-        
         $this.PaintTools[$colorName] = $penObj
     }
+
+    [void] DisposePaintTools() {
+        foreach ($tool in $this.PaintTools.Values) {
+            $tool["Active"].Dispose()
+            $tool["ActiveFilled"].Dispose()
+            $tool["GhostOutline"].Dispose()
+            $tool["Ghost"].Dispose()
+            $tool["Compliment"].Dispose()
+            $tool["ComplimentFilled"].Dispose()
+            # Add similar lines for other pens and brushes you might add in the future
+            # Thanks ChatGPT4
+        }
+    }
+    
 }
 
 class NodeInterface { # Handles PictureBox element inside of Form
