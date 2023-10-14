@@ -1,0 +1,13 @@
+# Create an inline module for form handling
+$formModule = New-Module -AsCustomObject -ScriptBlock {
+    # Define function to create and show a form
+    function Foo {
+        Write-Host "Hello World!"
+    }
+
+    # Export function to be accessible outside of the module
+    Export-ModuleMember -Function Foo
+}
+
+# Now you can use the function from the inline module
+$formModule.Foo()
