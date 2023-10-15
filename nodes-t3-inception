@@ -1,0 +1,213 @@
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+# Version 3
+# Add 3-D Basic Interface
+
+# GRAPHICAL SETUP..
+# ------------------------------------
+# Initialize custom color pallete, with functions to add more colors..
+$screenWidth = 800
+$screenHeight = 600
+
+# Define Main Form
+$script:Form = New-Object System.Windows.Forms.Form
+$script:Form.Text = "Nodes V3"
+$script:Form.Size = New-Object System.Drawing.Size($screenWidth, $screenHeight)
+
+# Define PictureBox
+$script:PictureBox = New-Object System.Windows.Forms.PictureBox
+$script:PictureBox.Dock = [System.Windows.Forms.DockStyle]::Fill
+$script:PictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::AutoSize
+
+# Define Bitmap and Graphics objects
+$script:Bitmap = New-Object System.Drawing.Bitmap $Form.Width, $Form.Height
+$script:Graphics = [System.Drawing.Graphics]::FromImage($Bitmap)
+
+# BUG: PaintTools index is acting funny...
+# $global:PaintTools = @{}
+# function addPen ([string]$colorName, [int]$alpha, [int]$red, [int]$green, [int]$blue) {
+#     Write-Host "Adding color with key: " $colorName
+
+#     # Calculate Inverse Color, for high contrast visibility..
+#     $ComplimentColor = [System.Drawing.Color]::FromArgb($alpha, 255 - $red, 255 - $green, 255 - $blue)
+
+#     $penObj = @{ 
+#         # Add variations of the original color to the collection..
+#         # Standard Color
+#         Active = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb($alpha, $red, $green, $blue))
+#         ActiveFilled = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb($alpha, $red, $green, $blue))
+        
+#         # Transparency
+#         GhostOutline = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb($alpha / 2, $red, $green, $blue))
+#         Ghost = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb($alpha / 2, $red, $green, $blue))
+        
+#         # Color Inversion
+#         Compliment = [System.Drawing.Pen]::new($ComplimentColor)
+#         ComplimentFilled = [System.Drawing.SolidBrush]::new($ComplimentColor)
+
+#         # Remember to add new color variations to the clean up script as well..
+#     }
+#     $global:PaintTools[$colorName] = $penObj
+
+# }
+
+# # These calls don't work as expected... TODO: Hardcode styles
+# addPen("Green", [int]255, [int]0, [int]160, [int]80)
+# addPen("Blue", [int]255, [int]0, [int]114, [int]188)
+# addPen("Yellow", [int]255, [int]255, [int]205, [int]0)
+# addPen("Gray", [int]255, [int]127, [int]127, [int]127)
+
+# Dither Patterns.. TODO
+
+
+# CLASS DEFINITIONS
+# ---------------------------------------
+class Node {
+    [hashtable]$Data
+
+    # METADATA
+    [int]$ID # TODO: Build Index for speed!
+    [string]$Name
+    [string]$Type
+    [string]$Label
+
+    # [Node]$NextNode
+    # [Node]$PreviousNode
+
+    [System.Collections.ArrayList]$Parents    # Upper Level Nodes
+    [System.Collections.ArrayList]$Children   # Lower Level Nodes
+    [System.Collections.ArrayList]$Neighbors  # Adjacent Nodes
+    [int]$Degree        # Connected Nodes
+
+    [float]$Cost # Or distance..
+    [bool]$Visited
+
+    [string]$Icon
+
+    # STATE INFORMATION
+    # Shaken, not stirred.
+    [float]$X
+    [float]$Y
+    [float]$Z
+    
+    [string]$Color
+    [string]$Status
+
+    [float]$Mass
+    [float]$Velocity
+    [float]$Temp
+
+    # ETC
+    # [float]$Hardness
+    # [float]$Bounciness...
+    
+    # Node Constructor
+    Node () {
+        # Reserve node 0 for the node representing the entire state..
+        $this.ID = $script:LastNodeID + 1
+        $script:LastNodeID = $this.ID
+
+        $script:All_Nodes.Add($this)
+
+        $this.X = 0
+        $this.Y = 0
+        $this.Z = 0
+
+        $this.Name = "Null"
+        $this.Type = "Unknown"
+        $this.Label = "Uninitialized"
+
+        $this.Parents = New-Object System.Collections.ArrayList
+        $this.Children = New-Object System.Collections.ArrayList
+        $this.Neighbors = New-Object System.Collections.ArrayList
+    }
+}
+
+function DrawNodes() {
+    $script:Graphics.Clear([System.Drawing.Color]::White)
+
+    # Quick Reprojection Style
+    # $brush = $global:PaintTools["Green"].Active
+    $brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::Green)
+    $nodeRadius = 20
+    foreach ($node in $script:All_Nodes) {
+        $xProj = ($node.X / ($node.Z + 1)) + ($screenWidth / 2)
+        $yProj = ($node.Y / ($node.Z + 1)) + ($screenHeight / 2)
+        $script:Graphics.FillEllipse($brush, $xProj - ($nodeRadius - ($node.Z + 1)), $yProj - ($nodeRadius - ($node.Z + 1)), (2 * $nodeRadius) / ($node.Z + 1), (2 * $nodeRadius) / ($node.Z + 1))
+    }
+    $script:PictureBox.Image = $script:Bitmap
+    $script:PictureBox.Refresh()
+}
+
+
+# PREPARE FOR SIMULATION..
+# ----------------------------------------------------
+# Master Index that stores information automatically when Nodes are created
+$script:All_Nodes = New-Object System.Collections.ArrayList
+$script:LastNodeID = 0 # IMPORTANT! Variable is updated automatically.
+
+# Create node to manage all the services
+$script:ServicesHandler = [Node]::new()
+$script:ServicesHandler.Name = "Services"
+$script:ServicesHandler.X = -80
+$script:ServicesHandler.Y = -40
+
+# Query Services, and register nodes to parent node
+$script:services = Get-Service
+foreach ($service in $services) {
+    # Adds service to the relevant node data
+    $newNode = [Node]::new()
+    $newNode.Name = $service.DisplayName
+    $newNode.Label = $service.ServiceName
+    $newNode.Status = $service.Status
+
+    $newNode.X = -100
+    $newNode.Z = $newNode.ID / 100
+    # TODO: MAP DEPENDENCIES
+
+    # Register to 'Services' Node
+    $script:ServicesHandler.Neighbors.Add($newNode)
+}
+
+# Create node to manage all the processes
+$script:ProcessesHandler = [Node]::new()
+$script:ProcessesHandler.Name = "Processes"
+$script:ProcessesHandler.X = 80
+$script:ProcessesHandler.Y = -40
+
+# Query Processes...
+$script:processes = Get-Process
+foreach ($process in $processes) {
+    # Add process to the revelant node data
+    $newNode = [Node]::new()
+    $newNode.Name = $process.ProcessName
+
+    $newNode.X = 100
+    $newNode.Z = $newNode.ID / 100
+
+    # Register to 'Processes' Node
+    $script:ProcessesHandler.Neighbors.Add($newNode)
+}
+
+
+# START THE SIMULATION
+# ----------------------------------------------------
+DrawNodes
+$script:Form.Controls.Add($pictureBox)
+
+
+# Show Interface
+$script:Form.Show()
+
+# Cleanup
+# ----------------------------------------------------
+# Release Pens
+foreach ($tool in $global:PaintTools.Values) {
+    $tool["Active"].Dispose()
+    $tool["ActiveFilled"].Dispose()
+    $tool["GhostOutline"].Dispose()
+    $tool["Ghost"].Dispose()
+    $tool["Compliment"].Dispose()
+    $tool["ComplimentFilled"].Dispose()
+}
