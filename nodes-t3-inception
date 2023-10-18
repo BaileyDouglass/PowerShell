@@ -2,7 +2,85 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # Version 3
-# Add 3-D Basic Interface
+# ------------------------------
+# MAJOR GOALS:
+# - [ ] Add 3-D Basic Interface
+# - [ ] Add responsive 2D overlay
+
+class Node {
+    [hashtable]$Data
+
+    # METADATA
+    [uint64]$ID # TODO: Build Index for speed!
+    [string]$Name
+    [string]$Type
+    [string]$Label
+
+    # [Node]$NextNode
+    # [Node]$PreviousNode
+
+    [System.Collections.ArrayList]$Parents    # Upper Level Nodes
+    [System.Collections.ArrayList]$Children   # Lower Level Nodes
+    [System.Collections.ArrayList]$Neighbors  # Adjacent Nodes
+    [uint64]$Degree        # Connected Nodes
+
+    [float]$Cost # Or distance..
+    [bool]$Visited
+
+    [string]$Icon
+
+    # STATE INFORMATION
+    # Shaken, not stirred.
+    [float]$X
+    [float]$Y
+    [float]$Z
+
+    [float]$theta
+    [float]$phi
+    [float]$orientation
+    
+    [int]$Hue
+
+    [string]$Status
+
+    [float]$Volume
+    [float]$Mass
+    [float]$Velocity
+    [float]$Temp
+
+    # ETC
+    # [float]$Hardness
+    # [float]$Bounciness...
+    
+    # Node Constructor
+    Node () {
+        # Assign node ID
+        # NOTE: Implementation reserves node 0 for the node representing the entire state.. maybe ; )
+        $this.ID = $script:LastNodeID + 1
+        $script:LastNodeID = $this.ID
+
+        # Register this new node to the master node list
+        $script:All_Nodes.Add($this)
+
+        # By default, this should make the node invisible
+        $this.Volume = 0
+
+        # Make sure default position is set.
+        $this.X = 0
+        $this.Y = 0
+        $this.Z = 0
+
+        # Make sure default metadata is set.
+        $this.Name = "Null"
+        $this.Type = "Unknown"
+        $this.Label = "Uninitialized"
+
+        # Make sure ArrayList handles are initialized.
+        $this.Parents = New-Object System.Collections.ArrayList
+        $this.Children = New-Object System.Collections.ArrayList
+        $this.Neighbors = New-Object System.Collections.ArrayList
+    }
+}
 
 # GRAPHICAL SETUP..
 # ------------------------------------
@@ -24,117 +102,162 @@ $script:PictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::AutoSiz
 $script:Bitmap = New-Object System.Drawing.Bitmap $Form.Width, $Form.Height
 $script:Graphics = [System.Drawing.Graphics]::FromImage($Bitmap)
 
-# BUG: PaintTools index is acting funny...
-# $global:PaintTools = @{}
-# function addPen ([string]$colorName, [int]$alpha, [int]$red, [int]$green, [int]$blue) {
-#     Write-Host "Adding color with key: " $colorName
+# Define Color Palette
+$global:Palette = @{}
+# Custom Color class object to handle HSV conversions
+class HSV {
+    # Assume alpha is at maximum opacity unless set otherwise.
+    [int]$Alpha
 
-#     # Calculate Inverse Color, for high contrast visibility..
-#     $ComplimentColor = [System.Drawing.Color]::FromArgb($alpha, 255 - $red, 255 - $green, 255 - $blue)
+    # Useful HSV color system variables:
+    [float]$Hue # Value between 0 - 360
+    [float]$Saturation # Value between 0 - 1
+    [float]$Value # Value between 0 - 1
 
-#     $penObj = @{ 
-#         # Add variations of the original color to the collection..
-#         # Standard Color
-#         Active = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb($alpha, $red, $green, $blue))
-#         ActiveFilled = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb($alpha, $red, $green, $blue))
-        
-#         # Transparency
-#         GhostOutline = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb($alpha / 2, $red, $green, $blue))
-#         Ghost = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb($alpha / 2, $red, $green, $blue))
-        
-#         # Color Inversion
-#         Compliment = [System.Drawing.Pen]::new($ComplimentColor)
-#         ComplimentFilled = [System.Drawing.SolidBrush]::new($ComplimentColor)
+    # Legacy RGB values
+    [int]$Red # Value between 0 - 255
+    [int]$Green # Value between 0 - 255
+    [int]$Blue # Value between 0 - 255
+    
+    # Constructor
+    # -------------------------------------------------------
+    HSV ([float]$hue, [float]$saturation, [float]$value) {
+        $this.Alpha = 255 # Default case, maximum opacity
 
-#         # Remember to add new color variations to the clean up script as well..
-#     }
-#     $global:PaintTools[$colorName] = $penObj
+        $this.Hue = $hue
+        $this.Saturation = $saturation
+        $this.Value = $value
 
-# }
+        # Convert to RGB and store result
+        # Check if the color is gray (Saturation is 0)
+        if ($this.Saturation -eq 0) {
+            # For gray colors, R, G, and B are all the same and correspond to the Value component
+            # Scaling from 0-100 to 0-255
+            $this.Red = $this.Green = $this.Blue = $this.Value * 2.55
+        } else {
+            # Initialize RGB values with junk data..
+            $R = 0
+            $G = 0
+            $B = 0
 
-# # These calls don't work as expected... TODO: Hardcode styles
-# addPen("Green", [int]255, [int]0, [int]160, [int]80)
-# addPen("Blue", [int]255, [int]0, [int]114, [int]188)
-# addPen("Yellow", [int]255, [int]255, [int]205, [int]0)
-# addPen("Gray", [int]255, [int]127, [int]127, [int]127)
+            # Scale down Hue, Saturation, and Value to the ranges expected by the algorithm
+            $h = $this.Hue / 60  # Hue is initially 0-360; scale to 0-6
+            $s = $this.Saturation / 100  # Saturation is initially 0-100; scale to 0-1
+            $v = $this.Value / 100  # Value is initially 0-100; scale to 0-1
+    
+            # Calculate intermediate variables for use in RGB calculation
+            $i = [Math]::Floor($h)  # Floor of h
+            $f = $h - $i  # Fractional part of h
+            $p = $v * (1 - $s)  # First intermediate value
+            $q = $v * (1 - $s * $f)  # Second intermediate value
+            $t = $v * (1 - $s * (1 - $f))  # Third intermediate value
+    
+            # Calculate R, G, and B based on hue segment
+            switch ($i % 6) {
+                0 { $R = $v; $G = $t; $B = $p }
+                1 { $R = $q; $G = $v; $B = $p }
+                2 { $R = $p; $G = $v; $B = $t }
+                3 { $R = $p; $G = $q; $B = $v }
+                4 { $R = $t; $G = $p; $B = $v }
+                5 { $R = $v; $G = $p; $B = $q }
+            }
+            
+            # Scale RGB values back up to the 0-255 range
+            $this.Red = $R * 255
+            $this.Green = $G * 255
+            $this.Blue = $B * 255
+        }
+    }
+}
+
+$script:initializedHues = New-Object System.Collections.ArrayList
+function initializeColor ([float]$h) {
+    
+    # Make sure original Hue handle is a float
+    $h = [float]::Parse($h)
+
+    # Usually, we will only use Integer context of hue..
+    $hue = [int]::Parse($h)
+    
+    # Infact, we will check if hue has been added already
+    if ($script:initializedHues.Contains($hue)) {
+        Write-Host "Hue: $hue was already initialized"
+        return #nothing, exit function..
+    } else {
+        # Add hue to initializedHues list
+        $script:initializedHues.Add($hue)
+    } # Continue..
+
+    Write-Host "Adding hue($hue)"
+
+    # Index hue into Palette, create new hashmap to store styles..
+    $global:Palette[$hue] = @{}
+    
+    $base_styles = @{
+        # Note: Make sure all values are in [float] when doing arithmetic
+        "Selected" = [HSV]::new($h, 80.0, 80.0)
+        "Highlight" = [HSV]::new($h, 100.0, 100.0)
+
+        # Eye catching alternative
+        "RedShift" = [HSV]::new(($h - 15.0) % 360.0, 100.0, 100.0)
+        "BlueShift" = [HSV]::new(($h + 15.0) % 360.0, 100.0, 100.0)
+
+        # Darker Shades
+        "Dark" = [HSV]::new($h, 85.0, 60.0)
+        "Darker" = [HSV]::new($h, 90.0, 40.0)
+        "Darkest" = [HSV]::new($h, 95.0, 20.0)
+
+        # Lighter Shades
+        "Bright" = [HSV]::new($h, 60.0, 85.0)
+        "Brighter" = [HSV]::new($h, 40.0, 90.0)
+        "Brightest" = [HSV]::new($h, 20.0, 95.0)
+    }
+
+    # Create a Pen and Brush for each color variation
+    foreach ($style in $base_styles.Keys) {
+        # Add index to Palette.Hue for each style
+        $global:Palette[$hue]["$style"] = @{}
+
+        $hsv = $base_styles["$style"] 
+
+        $red = $hsv.Red
+        $green = $hsv.Green
+        $blue = $hsv.Blue
+
+        # Define 4 opacity levels, spaced out log2 style
+        $opacityOptions = @(255, 127, 63, 31) # Full, Half, Quarter, Eighth
+        for ($i = 0; $i -lt $opacityOptions.Length; $i++) {
+            $color = [System.Drawing.Color]::FromArgb($opacityOptions[$i], $red, $green, $blue)
+            
+            # Create index for opacity, to store a Pen and Brush
+            $global:Palette[$hue]["$style"][$i] = @{}
+
+            $global:Palette[$hue]["$style"][$i]["Pen"] = [System.Drawing.Pen]::New($color)
+            $global:Palette[$hue]["$style"][$i]["Brush"] = [System.Drawing.SolidBrush]::New($color)
+        }
+    }
+}
+
+# Fully initialize variations into the Palette for 6 evenly distributed colors
+$global:defaultColors = @(30, 90, 150, 210, 270, 330)
+foreach ($hue in $script:defaultColors) {
+    initializeColor($hue)
+}
+
 
 # Dither Patterns.. TODO
 
 
-# CLASS DEFINITIONS
-# ---------------------------------------
-class Node {
-    [hashtable]$Data
-
-    # METADATA
-    [int]$ID # TODO: Build Index for speed!
-    [string]$Name
-    [string]$Type
-    [string]$Label
-
-    # [Node]$NextNode
-    # [Node]$PreviousNode
-
-    [System.Collections.ArrayList]$Parents    # Upper Level Nodes
-    [System.Collections.ArrayList]$Children   # Lower Level Nodes
-    [System.Collections.ArrayList]$Neighbors  # Adjacent Nodes
-    [int]$Degree        # Connected Nodes
-
-    [float]$Cost # Or distance..
-    [bool]$Visited
-
-    [string]$Icon
-
-    # STATE INFORMATION
-    # Shaken, not stirred.
-    [float]$X
-    [float]$Y
-    [float]$Z
-    
-    [string]$Color
-    [string]$Status
-
-    [float]$Mass
-    [float]$Velocity
-    [float]$Temp
-
-    # ETC
-    # [float]$Hardness
-    # [float]$Bounciness...
-    
-    # Node Constructor
-    Node () {
-        # Reserve node 0 for the node representing the entire state..
-        $this.ID = $script:LastNodeID + 1
-        $script:LastNodeID = $this.ID
-
-        $script:All_Nodes.Add($this)
-
-        $this.X = 0
-        $this.Y = 0
-        $this.Z = 0
-
-        $this.Name = "Null"
-        $this.Type = "Unknown"
-        $this.Label = "Uninitialized"
-
-        $this.Parents = New-Object System.Collections.ArrayList
-        $this.Children = New-Object System.Collections.ArrayList
-        $this.Neighbors = New-Object System.Collections.ArrayList
-    }
-}
-
 function DrawNodes() {
+    # Note: It might be useful in the future to render to different layers...
     $script:Graphics.Clear([System.Drawing.Color]::White)
 
     # Quick Reprojection Style
-    # $brush = $global:PaintTools["Green"].Active
-    $brush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::Green)
-    $nodeRadius = 20
     foreach ($node in $script:All_Nodes) {
+        $brush = $global:Palette[$node.Hue]["Selected"][2].Brush
         $xProj = ($node.X / ($node.Z + 1)) + ($screenWidth / 2)
         $yProj = ($node.Y / ($node.Z + 1)) + ($screenHeight / 2)
-        $script:Graphics.FillEllipse($brush, $xProj - ($nodeRadius - ($node.Z + 1)), $yProj - ($nodeRadius - ($node.Z + 1)), (2 * $nodeRadius) / ($node.Z + 1), (2 * $nodeRadius) / ($node.Z + 1))
+        $script:Graphics.FillEllipse($brush, $xProj - ([int]::Parse($node.Volume) - ($node.Z + 1)), $yProj - ([int]::Parse($node.Volume) - ($node.Z + 1)), (2 * [int]::Parse($node.Volume)) / ($node.Z + 1), (2 * [int]::Parse($node.Volume)) / ($node.Z + 1))
     }
     $script:PictureBox.Image = $script:Bitmap
     $script:PictureBox.Refresh()
@@ -146,48 +269,33 @@ function DrawNodes() {
 # Master Index that stores information automatically when Nodes are created
 $script:All_Nodes = New-Object System.Collections.ArrayList
 $script:LastNodeID = 0 # IMPORTANT! Variable is updated automatically.
+# -----------------------------------------------------
 
-# Create node to manage all the services
-$script:ServicesHandler = [Node]::new()
-$script:ServicesHandler.Name = "Services"
-$script:ServicesHandler.X = -80
-$script:ServicesHandler.Y = -40
+# Index for all grid Nodes
+$script:grid_nodes = New-Object System.Collections.ArrayList
 
-# Query Services, and register nodes to parent node
-$script:services = Get-Service
-foreach ($service in $services) {
-    # Adds service to the relevant node data
-    $newNode = [Node]::new()
-    $newNode.Name = $service.DisplayName
-    $newNode.Label = $service.ServiceName
-    $newNode.Status = $service.Status
+# Create a 10x10x10 grid
+for ($x = 1; $x -lt 10; $x++) {
+    for ($y = 1; $y -lt 10; $y++) {
+        for ($z = 1; $z -lt 10; $z++) {
+            $point = [Node]::new()
 
-    $newNode.X = -100
-    $newNode.Z = $newNode.ID / 100
-    # TODO: MAP DEPENDENCIES
+            $point.Volume = 20.0
 
-    # Register to 'Services' Node
-    $script:ServicesHandler.Neighbors.Add($newNode)
-}
+            $point.Z = $z
 
-# Create node to manage all the processes
-$script:ProcessesHandler = [Node]::new()
-$script:ProcessesHandler.Name = "Processes"
-$script:ProcessesHandler.X = 80
-$script:ProcessesHandler.Y = -40
+            $point.X = -500 + (100 * $x)
+            $point.Y = -500 + (100 * $y)
+            
 
-# Query Processes...
-$script:processes = Get-Process
-foreach ($process in $processes) {
-    # Add process to the revelant node data
-    $newNode = [Node]::new()
-    $newNode.Name = $process.ProcessName
+            $point.Label = "($x, $y, $z)"
 
-    $newNode.X = 100
-    $newNode.Z = $newNode.ID / 100
+            # Assign a random hue to the point
+            $point.Hue = $global:defaultColors[$point.ID % 6]
 
-    # Register to 'Processes' Node
-    $script:ProcessesHandler.Neighbors.Add($newNode)
+            $script:grid_nodes.Add($point)
+        }
+    }
 }
 
 
@@ -198,16 +306,8 @@ $script:Form.Controls.Add($pictureBox)
 
 
 # Show Interface
-$script:Form.Show()
+$script:Form.ShowDialog()
 
 # Cleanup
 # ----------------------------------------------------
 # Release Pens
-foreach ($tool in $global:PaintTools.Values) {
-    $tool["Active"].Dispose()
-    $tool["ActiveFilled"].Dispose()
-    $tool["GhostOutline"].Dispose()
-    $tool["Ghost"].Dispose()
-    $tool["Compliment"].Dispose()
-    $tool["ComplimentFilled"].Dispose()
-}
